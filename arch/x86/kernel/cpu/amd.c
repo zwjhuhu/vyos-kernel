@@ -549,13 +549,14 @@ static void bsp_init_amd(struct cpuinfo_x86 *c)
 
 	if (!boot_cpu_has(X86_FEATURE_AMD_SSBD) &&
 	    !boot_cpu_has(X86_FEATURE_VIRT_SSBD) &&
-	    c->x86 >= 0x15 && c->x86 <= 0x17) {
+	    c->x86 >= 0x15 && c->x86 <= 0x18) {
 		unsigned int bit;
 
 		switch (c->x86) {
 		case 0x15: bit = 54; break;
 		case 0x16: bit = 33; break;
 		case 0x17: bit = 10; break;
+		case 0x18: bit = 10; break;
 		default: return;
 		}
 		/*
@@ -892,6 +893,12 @@ static void init_amd_zn(struct cpuinfo_x86 *c)
 		set_cpu_cap(c, X86_FEATURE_CPB);
 }
 
+static void init_hygon_dhyana(struct cpuinfo_x86 *c)
+{
+	set_cpu_cap(c, X86_FEATURE_ZEN);
+	set_cpu_cap(c, X86_FEATURE_CPB);
+}
+
 static void init_amd(struct cpuinfo_x86 *c)
 {
 	early_init_amd(c);
@@ -922,6 +929,7 @@ static void init_amd(struct cpuinfo_x86 *c)
 	case 0x15: init_amd_bd(c); break;
 	case 0x16: init_amd_jg(c); break;
 	case 0x17: init_amd_zn(c); break;
+	case 0x18: init_hygon_dhyana(c); break;
 	}
 
 	/*
@@ -1050,6 +1058,18 @@ static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
 
 	tlb_lli_4m[ENTRIES] = tlb_lli_2m[ENTRIES] >> 1;
 }
+
+static const struct cpu_dev hygon_cpu_dev = {
+	.c_vendor	= "Hygon",
+	.c_ident	= { "HygonGenuine" },
+	.c_early_init   = early_init_amd,
+	.c_detect_tlb	= cpu_detect_tlb_amd,
+	.c_bsp_init	= bsp_init_amd,
+	.c_init		= init_amd,
+	.c_x86_vendor	= X86_VENDOR_HYGON,
+};
+
+cpu_dev_register(hygon_cpu_dev);
 
 static const struct cpu_dev amd_cpu_dev = {
 	.c_vendor	= "AMD",
