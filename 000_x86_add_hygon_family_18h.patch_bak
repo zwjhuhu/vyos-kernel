@@ -1,0 +1,1009 @@
+diff --git a/arch/x86/events/amd/core.c b/arch/x86/events/amd/core.c
+index c84584b..7d2d7c8 100644
+--- a/arch/x86/events/amd/core.c
++++ b/arch/x86/events/amd/core.c
+@@ -669,6 +669,10 @@ static int __init amd_core_pmu_init(void)
+ 		 * We fallback to using default amd_get_event_constraints.
+ 		 */
+ 		break;
++	case 0x18:
++		pr_cont("Fam18h ");
++		/* Using default amd_get_event_constraints. */
++		break;
+ 	default:
+ 		pr_err("core perfctr but no constraints; unknown hardware!\n");
+ 		return -ENODEV;
+diff --git a/arch/x86/events/amd/uncore.c b/arch/x86/events/amd/uncore.c
+index 8671de1..02eba64 100644
+--- a/arch/x86/events/amd/uncore.c
++++ b/arch/x86/events/amd/uncore.c
+@@ -515,15 +515,16 @@ static int __init amd_uncore_init(void)
+ {
+ 	int ret = -ENODEV;
+ 
+-	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD)
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD &&
++	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
+ 		return -ENODEV;
+ 
+ 	if (!boot_cpu_has(X86_FEATURE_TOPOEXT))
+ 		return -ENODEV;
+ 
+-	if (boot_cpu_data.x86 == 0x17) {
++	if (boot_cpu_data.x86 == 0x17 || boot_cpu_data.x86 == 0x18) {
+ 		/*
+-		 * For F17h, the Northbridge counters are repurposed as Data
++		 * For F17h/F18h, the Northbridge counters are repurposed as Data
+ 		 * Fabric counters. Also, L3 counters are supported too. The PMUs
+ 		 * are exported based on  family as either L2 or L3 and NB or DF.
+ 		 */
+@@ -557,7 +558,10 @@ static int __init amd_uncore_init(void)
+ 		if (ret)
+ 			goto fail_nb;
+ 
+-		pr_info("AMD NB counters detected\n");
++		pr_info("%s NB counters detected\n",
++			boot_cpu_data.x86_vendor == X86_VENDOR_HYGON ?
++				"HYGON" : "AMD");
++
+ 		ret = 0;
+ 	}
+ 
+@@ -571,7 +575,9 @@ static int __init amd_uncore_init(void)
+ 		if (ret)
+ 			goto fail_llc;
+ 
+-		pr_info("AMD LLC counters detected\n");
++		pr_info("%s LLC counters detected\n",
++			boot_cpu_data.x86_vendor == X86_VENDOR_HYGON ?
++				"HYGON" : "AMD");
+ 		ret = 0;
+ 	}
+ 
+diff --git a/arch/x86/events/core.c b/arch/x86/events/core.c
+index c8d08da..445d4f6 100644
+--- a/arch/x86/events/core.c
++++ b/arch/x86/events/core.c
+@@ -1756,6 +1756,10 @@ static int __init init_hw_perf_events(void)
+ 	case X86_VENDOR_AMD:
+ 		err = amd_pmu_init();
+ 		break;
++	case X86_VENDOR_HYGON:
++		err = amd_pmu_init();
++		x86_pmu.name = "HYGON";
++		break;
+ 	default:
+ 		err = -ENOTSUPP;
+ 	}
+diff --git a/arch/x86/include/asm/amd_nb.h b/arch/x86/include/asm/amd_nb.h
+index fddb6d2..1ae4e57 100644
+--- a/arch/x86/include/asm/amd_nb.h
++++ b/arch/x86/include/asm/amd_nb.h
+@@ -103,6 +103,9 @@ static inline u16 amd_pci_dev_to_node_id(struct pci_dev *pdev)
+ 
+ static inline bool amd_gart_present(void)
+ {
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD)
++		return false;
++
+ 	/* GART present only on Fam15h, upto model 0fh */
+ 	if (boot_cpu_data.x86 == 0xf || boot_cpu_data.x86 == 0x10 ||
+ 	    (boot_cpu_data.x86 == 0x15 && boot_cpu_data.x86_model < 0x10))
+diff --git a/arch/x86/include/asm/kvm_emulate.h b/arch/x86/include/asm/kvm_emulate.h
+index 0f82cd9..93c4bf5 100644
+--- a/arch/x86/include/asm/kvm_emulate.h
++++ b/arch/x86/include/asm/kvm_emulate.h
+@@ -364,6 +364,10 @@ struct x86_emulate_ctxt {
+ #define X86EMUL_CPUID_VENDOR_AMDisbetterI_ecx 0x21726574
+ #define X86EMUL_CPUID_VENDOR_AMDisbetterI_edx 0x74656273
+ 
++#define X86EMUL_CPUID_VENDOR_HygonGenuine_ebx 0x6f677948
++#define X86EMUL_CPUID_VENDOR_HygonGenuine_ecx 0x656e6975
++#define X86EMUL_CPUID_VENDOR_HygonGenuine_edx 0x6e65476e
++
+ #define X86EMUL_CPUID_VENDOR_GenuineIntel_ebx 0x756e6547
+ #define X86EMUL_CPUID_VENDOR_GenuineIntel_ecx 0x6c65746e
+ #define X86EMUL_CPUID_VENDOR_GenuineIntel_edx 0x49656e69
+diff --git a/arch/x86/include/asm/processor.h b/arch/x86/include/asm/processor.h
+index d53c54b..d4dfd02 100644
+--- a/arch/x86/include/asm/processor.h
++++ b/arch/x86/include/asm/processor.h
+@@ -155,7 +155,8 @@ enum cpuid_regs_idx {
+ #define X86_VENDOR_CENTAUR	5
+ #define X86_VENDOR_TRANSMETA	7
+ #define X86_VENDOR_NSC		8
+-#define X86_VENDOR_NUM		9
++#define X86_VENDOR_HYGON	9
++#define X86_VENDOR_NUM		10
+ 
+ #define X86_VENDOR_UNKNOWN	0xff
+ 
+diff --git a/arch/x86/include/asm/virtext.h b/arch/x86/include/asm/virtext.h
+index 0116b2e..e05e0d3 100644
+--- a/arch/x86/include/asm/virtext.h
++++ b/arch/x86/include/asm/virtext.h
+@@ -83,9 +83,10 @@ static inline void cpu_emergency_vmxoff(void)
+  */
+ static inline int cpu_has_svm(const char **msg)
+ {
+-	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD) {
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD &&
++	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON) {
+ 		if (msg)
+-			*msg = "not amd";
++			*msg = "not amd or hygon";
+ 		return 0;
+ 	}
+ 
+diff --git a/arch/x86/kernel/acpi/cstate.c b/arch/x86/kernel/acpi/cstate.c
+index 158ad14..751d908 100644
+--- a/arch/x86/kernel/acpi/cstate.c
++++ b/arch/x86/kernel/acpi/cstate.c
+@@ -168,6 +168,7 @@ static int __init ffh_cstate_init(void)
+ 	struct cpuinfo_x86 *c = &boot_cpu_data;
+ 
+ 	if (c->x86_vendor != X86_VENDOR_INTEL &&
++	    c->x86_vendor != X86_VENDOR_HYGON &&
+ 	    c->x86_vendor != X86_VENDOR_AMD)
+ 		return -1;
+ 
+diff --git a/arch/x86/kernel/alternative.c b/arch/x86/kernel/alternative.c
+index b9d5e7c..184e9a0 100644
+--- a/arch/x86/kernel/alternative.c
++++ b/arch/x86/kernel/alternative.c
+@@ -222,6 +222,10 @@ void __init arch_init_ideal_nops(void)
+ 		}
+ 		break;
+ 
++	case X86_VENDOR_HYGON:
++		ideal_nops = p6_nops;
++		return;
++
+ 	case X86_VENDOR_AMD:
+ 		if (boot_cpu_data.x86 > 0xf) {
+ 			ideal_nops = p6_nops;
+diff --git a/arch/x86/kernel/amd_nb.c b/arch/x86/kernel/amd_nb.c
+index b481b95..beb878c 100644
+--- a/arch/x86/kernel/amd_nb.c
++++ b/arch/x86/kernel/amd_nb.c
+@@ -28,6 +28,7 @@ static u32 *flush_words;
+ static const struct pci_device_id amd_root_ids[] = {
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_17H_ROOT) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_17H_M10H_ROOT) },
++	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_AMD_17H_ROOT) },
+ 	{}
+ };
+ 
+@@ -45,6 +46,7 @@ const struct pci_device_id amd_nb_misc_ids[] = {
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_17H_DF_F3) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_17H_M10H_DF_F3) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_CNB17H_F3) },
++	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_AMD_17H_DF_F3) },
+ 	{}
+ };
+ EXPORT_SYMBOL_GPL(amd_nb_misc_ids);
+@@ -58,6 +60,7 @@ static const struct pci_device_id amd_nb_link_ids[] = {
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_17H_DF_F4) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_17H_M10H_DF_F4) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_CNB17H_F4) },
++	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_AMD_17H_DF_F4) },
+ 	{}
+ };
+ 
+@@ -264,6 +267,10 @@ bool __init early_is_amd_nb(u32 device)
+ 	const struct pci_device_id *id;
+ 	u32 vendor = device & 0xffff;
+ 
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD &&
++	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
++		return false;
++
+ 	device >>= 16;
+ 	for (id = amd_nb_misc_ids; id->vendor; id++)
+ 		if (vendor == id->vendor && device == id->device)
+@@ -277,7 +284,8 @@ struct resource *amd_get_mmconfig_range(struct resource *res)
+ 	u64 base, msr;
+ 	unsigned int segn_busn_bits;
+ 
+-	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD)
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD &&
++	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
+ 		return NULL;
+ 
+ 	/* assume all cpus from fam10h have mmconfig */
+diff --git a/arch/x86/kernel/apic/apic.c b/arch/x86/kernel/apic/apic.c
+index 84132ed..ab731ab 100644
+--- a/arch/x86/kernel/apic/apic.c
++++ b/arch/x86/kernel/apic/apic.c
+@@ -224,6 +224,11 @@ static int modern_apic(void)
+ 	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+ 	    boot_cpu_data.x86 >= 0xf)
+ 		return 1;
++
++	/* Hygon systems use modern APIC */
++	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
++		return 1;
++
+ 	return lapic_get_version() >= 0x14;
+ }
+ 
+@@ -1912,6 +1917,8 @@ static int __init detect_init_APIC(void)
+ 		    (boot_cpu_data.x86 >= 15))
+ 			break;
+ 		goto no_apic;
++	case X86_VENDOR_HYGON:
++		break;
+ 	case X86_VENDOR_INTEL:
+ 		if (boot_cpu_data.x86 == 6 || boot_cpu_data.x86 == 15 ||
+ 		    (boot_cpu_data.x86 == 5 && boot_cpu_has(X86_FEATURE_APIC)))
+diff --git a/arch/x86/kernel/apic/probe_32.c b/arch/x86/kernel/apic/probe_32.c
+index 02e8acb..47ff297 100644
+--- a/arch/x86/kernel/apic/probe_32.c
++++ b/arch/x86/kernel/apic/probe_32.c
+@@ -185,6 +185,7 @@ void __init default_setup_apic_routing(void)
+ 				break;
+ 			}
+ 			/* If P4 and above fall through */
++		case X86_VENDOR_HYGON:
+ 		case X86_VENDOR_AMD:
+ 			def_to_bigsmp = 1;
+ 		}
+diff --git a/arch/x86/kernel/cpu/amd.c b/arch/x86/kernel/cpu/amd.c
+index eeea634..4ecea1c 100644
+--- a/arch/x86/kernel/cpu/amd.c
++++ b/arch/x86/kernel/cpu/amd.c
+@@ -549,13 +549,14 @@ static void bsp_init_amd(struct cpuinfo_x86 *c)
+ 
+ 	if (!boot_cpu_has(X86_FEATURE_AMD_SSBD) &&
+ 	    !boot_cpu_has(X86_FEATURE_VIRT_SSBD) &&
+-	    c->x86 >= 0x15 && c->x86 <= 0x17) {
++	    c->x86 >= 0x15 && c->x86 <= 0x18) {
+ 		unsigned int bit;
+ 
+ 		switch (c->x86) {
+ 		case 0x15: bit = 54; break;
+ 		case 0x16: bit = 33; break;
+ 		case 0x17: bit = 10; break;
++		case 0x18: bit = 10; break;
+ 		default: return;
+ 		}
+ 		/*
+@@ -826,6 +827,12 @@ static void init_amd_zn(struct cpuinfo_x86 *c)
+ 		set_cpu_cap(c, X86_FEATURE_CPB);
+ }
+ 
++static void init_hygon_dhyana(struct cpuinfo_x86 *c)
++{
++	set_cpu_cap(c, X86_FEATURE_ZEN);
++	set_cpu_cap(c, X86_FEATURE_CPB);
++}
++
+ static void init_amd(struct cpuinfo_x86 *c)
+ {
+ 	early_init_amd(c);
+@@ -855,6 +862,7 @@ static void init_amd(struct cpuinfo_x86 *c)
+ 	case 0x12: init_amd_ln(c); break;
+ 	case 0x15: init_amd_bd(c); break;
+ 	case 0x17: init_amd_zn(c); break;
++	case 0x18: init_hygon_dhyana(c); break;
+ 	}
+ 
+ 	/*
+@@ -984,6 +992,18 @@ static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
+ 	tlb_lli_4m[ENTRIES] = tlb_lli_2m[ENTRIES] >> 1;
+ }
+ 
++static const struct cpu_dev hygon_cpu_dev = {
++	.c_vendor	= "Hygon",
++	.c_ident	= { "HygonGenuine" },
++	.c_early_init   = early_init_amd,
++	.c_detect_tlb	= cpu_detect_tlb_amd,
++	.c_bsp_init	= bsp_init_amd,
++	.c_init		= init_amd,
++	.c_x86_vendor	= X86_VENDOR_HYGON,
++};
++
++cpu_dev_register(hygon_cpu_dev);
++
+ static const struct cpu_dev amd_cpu_dev = {
+ 	.c_vendor	= "AMD",
+ 	.c_ident	= { "AuthenticAMD" },
+diff --git a/arch/x86/kernel/cpu/bugs.c b/arch/x86/kernel/cpu/bugs.c
+index 78928f5..500278f 100644
+--- a/arch/x86/kernel/cpu/bugs.c
++++ b/arch/x86/kernel/cpu/bugs.c
+@@ -456,6 +456,7 @@ static enum spectre_v2_mitigation_cmd __init spectre_v2_parse_cmdline(void)
+ 	}
+ 
+ 	if (cmd == SPECTRE_V2_CMD_RETPOLINE_AMD &&
++	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON &&
+ 	    boot_cpu_data.x86_vendor != X86_VENDOR_AMD) {
+ 		pr_err("retpoline,amd selected but CPU is not AMD. Switching to AUTO select\n");
+ 		return SPECTRE_V2_CMD_AUTO;
+@@ -512,7 +513,8 @@ static void __init spectre_v2_select_mitigation(void)
+ 	return;
+ 
+ retpoline_auto:
+-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
++	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD ||
++	    boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+ 	retpoline_amd:
+ 		if (!boot_cpu_has(X86_FEATURE_LFENCE_RDTSC)) {
+ 			pr_err("Spectre mitigation: LFENCE not serializing, switching to generic retpoline\n");
+diff --git a/arch/x86/kernel/cpu/cacheinfo.c b/arch/x86/kernel/cpu/cacheinfo.c
+index 0c5fcbd..5b5041f 100644
+--- a/arch/x86/kernel/cpu/cacheinfo.c
++++ b/arch/x86/kernel/cpu/cacheinfo.c
+@@ -595,7 +595,8 @@ cpuid4_cache_lookup_regs(int index, struct _cpuid4_info_regs *this_leaf)
+ 	union _cpuid4_leaf_ecx	ecx;
+ 	unsigned		edx;
+ 
+-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
++	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD ||
++	    boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
+ 		if (boot_cpu_has(X86_FEATURE_TOPOEXT))
+ 			cpuid_count(0x8000001d, index, &eax.full,
+ 				    &ebx.full, &ecx.full, &edx);
+@@ -625,7 +626,8 @@ static int find_num_cache_leaves(struct cpuinfo_x86 *c)
+ 	union _cpuid4_leaf_eax	cache_eax;
+ 	int 			i = -1;
+ 
+-	if (c->x86_vendor == X86_VENDOR_AMD)
++	if (c->x86_vendor == X86_VENDOR_AMD ||
++	    c->x86_vendor == X86_VENDOR_HYGON)
+ 		op = 0x8000001d;
+ 	else
+ 		op = 4;
+@@ -658,6 +660,14 @@ void cacheinfo_amd_init_llc_id(struct cpuinfo_x86 *c, int cpu, u8 node_id)
+ 		 * Core complex ID is ApicId[3] for these processors.
+ 		 */
+ 		per_cpu(cpu_llc_id, cpu) = c->apicid >> 3;
++	} else if (c->x86 == 0x18) {
++		/* Socket ID is ApicId[6] for these processors. */
++		c->phys_proc_id = c->initial_apicid >> 6;
++		/*
++		 * LLC is at the core complex level.
++		 * Core complex ID is ApicId[3] for these processors.
++		 */
++		per_cpu(cpu_llc_id, cpu) = c->apicid >> 3;
+ 	} else {
+ 		/*
+ 		 * LLC ID is calculated from the number of threads sharing the
+@@ -913,7 +923,8 @@ static void __cache_cpumap_setup(unsigned int cpu, int index,
+ 	int index_msb, i;
+ 	struct cpuinfo_x86 *c = &cpu_data(cpu);
+ 
+-	if (c->x86_vendor == X86_VENDOR_AMD) {
++	if (c->x86_vendor == X86_VENDOR_AMD ||
++	    c->x86_vendor == X86_VENDOR_HYGON) {
+ 		if (__cache_amd_cpumap_setup(cpu, index, base))
+ 			return;
+ 	}
+diff --git a/arch/x86/kernel/cpu/common.c b/arch/x86/kernel/cpu/common.c
+index 44c4ef3..851cbe7 100644
+--- a/arch/x86/kernel/cpu/common.c
++++ b/arch/x86/kernel/cpu/common.c
+@@ -963,6 +963,7 @@ static const __initconst struct x86_cpu_id cpu_no_speculation[] = {
+ 
+ static const __initconst struct x86_cpu_id cpu_no_meltdown[] = {
+ 	{ X86_VENDOR_AMD },
++	{ X86_VENDOR_HYGON },
+ 	{}
+ };
+ 
+diff --git a/arch/x86/kernel/cpu/mcheck/mce-severity.c b/arch/x86/kernel/cpu/mcheck/mce-severity.c
+index f34d89c..44396d5 100644
+--- a/arch/x86/kernel/cpu/mcheck/mce-severity.c
++++ b/arch/x86/kernel/cpu/mcheck/mce-severity.c
+@@ -336,7 +336,8 @@ int (*mce_severity)(struct mce *m, int tolerant, char **msg, bool is_excp) =
+ 
+ void __init mcheck_vendor_init_severity(void)
+ {
+-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
++	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD ||
++	    boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+ 		mce_severity = mce_severity_amd;
+ }
+ 
+diff --git a/arch/x86/kernel/cpu/mcheck/mce.c b/arch/x86/kernel/cpu/mcheck/mce.c
+index cdbedeb..25e80cb 100644
+--- a/arch/x86/kernel/cpu/mcheck/mce.c
++++ b/arch/x86/kernel/cpu/mcheck/mce.c
+@@ -270,7 +270,7 @@ static void print_mce(struct mce *m)
+ {
+ 	__print_mce(m);
+ 
+-	if (m->cpuvendor != X86_VENDOR_AMD)
++	if (m->cpuvendor != X86_VENDOR_AMD && m->cpuvendor != X86_VENDOR_HYGON)
+ 		pr_emerg_ratelimited(HW_ERR "Run the above through 'mcelog --ascii'\n");
+ }
+ 
+@@ -509,7 +509,8 @@ EXPORT_SYMBOL_GPL(mce_usable_address);
+ 
+ bool mce_is_memory_error(struct mce *m)
+ {
+-	if (m->cpuvendor == X86_VENDOR_AMD) {
++	if (m->cpuvendor == X86_VENDOR_AMD ||
++	    m->cpuvendor == X86_VENDOR_HYGON) {
+ 		return amd_mce_is_memory_error(m);
+ 
+ 	} else if (m->cpuvendor == X86_VENDOR_INTEL) {
+@@ -540,6 +541,9 @@ bool mce_is_correctable(struct mce *m)
+ 	if (m->cpuvendor == X86_VENDOR_AMD && m->status & MCI_STATUS_DEFERRED)
+ 		return false;
+ 
++	if (m->cpuvendor == X86_VENDOR_HYGON && m->status & MCI_STATUS_DEFERRED)
++		return false;
++
+ 	if (m->status & MCI_STATUS_UC)
+ 		return false;
+ 
+@@ -1707,7 +1711,7 @@ static int __mcheck_cpu_ancient_init(struct cpuinfo_x86 *c)
+  */
+ static void __mcheck_cpu_init_early(struct cpuinfo_x86 *c)
+ {
+-	if (c->x86_vendor == X86_VENDOR_AMD) {
++	if (c->x86_vendor == X86_VENDOR_AMD || c->x86_vendor == X86_VENDOR_HYGON) {
+ 		mce_flags.overflow_recov = !!cpu_has(c, X86_FEATURE_OVERFLOW_RECOV);
+ 		mce_flags.succor	 = !!cpu_has(c, X86_FEATURE_SUCCOR);
+ 		mce_flags.smca		 = !!cpu_has(c, X86_FEATURE_SMCA);
+@@ -1744,6 +1748,7 @@ static void __mcheck_cpu_init_vendor(struct cpuinfo_x86 *c)
+ 		mce_adjust_timer = cmci_intel_adjust_timer;
+ 		break;
+ 
++	case X86_VENDOR_HYGON:
+ 	case X86_VENDOR_AMD: {
+ 		mce_amd_feature_init(c);
+ 		break;
+@@ -1973,12 +1978,14 @@ static void mce_disable_error_reporting(void)
+ static void vendor_disable_error_reporting(void)
+ {
+ 	/*
+-	 * Don't clear on Intel or AMD CPUs. Some of these MSRs are socket-wide.
++	 * Don't clear on Intel, AMD or Hygon CPUs. Some of these MSRs
++	 * are socket-wide.
+ 	 * Disabling them for just a single offlined CPU is bad, since it will
+ 	 * inhibit reporting for all shared resources on the socket like the
+ 	 * last level cache (LLC), the integrated memory controller (iMC), etc.
+ 	 */
+ 	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL ||
++	    boot_cpu_data.x86_vendor == X86_VENDOR_HYGON ||
+ 	    boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
+ 		return;
+ 
+diff --git a/arch/x86/kernel/cpu/microcode/core.c b/arch/x86/kernel/cpu/microcode/core.c
+index b9bc8a1..ce09aa1 100644
+--- a/arch/x86/kernel/cpu/microcode/core.c
++++ b/arch/x86/kernel/cpu/microcode/core.c
+@@ -832,6 +832,10 @@ int __init microcode_init(void)
+ 	if (dis_ucode_ldr)
+ 		return -EINVAL;
+ 
++	/* Hygon microcode loading to be implemented */
++	if (c->x86_vendor == X86_VENDOR_HYGON)
++		return 0;
++
+ 	if (c->x86_vendor == X86_VENDOR_INTEL)
+ 		microcode_ops = init_intel_microcode();
+ 	else if (c->x86_vendor == X86_VENDOR_AMD)
+diff --git a/arch/x86/kernel/cpu/mtrr/cleanup.c b/arch/x86/kernel/cpu/mtrr/cleanup.c
+index 765afd5..3668c5d 100644
+--- a/arch/x86/kernel/cpu/mtrr/cleanup.c
++++ b/arch/x86/kernel/cpu/mtrr/cleanup.c
+@@ -831,7 +831,8 @@ int __init amd_special_default_mtrr(void)
+ {
+ 	u32 l, h;
+ 
+-	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD)
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD &&
++	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
+ 		return 0;
+ 	if (boot_cpu_data.x86 < 0xf)
+ 		return 0;
+diff --git a/arch/x86/kernel/cpu/perfctr-watchdog.c b/arch/x86/kernel/cpu/perfctr-watchdog.c
+index d389083..9556930 100644
+--- a/arch/x86/kernel/cpu/perfctr-watchdog.c
++++ b/arch/x86/kernel/cpu/perfctr-watchdog.c
+@@ -46,6 +46,7 @@ static inline unsigned int nmi_perfctr_msr_to_bit(unsigned int msr)
+ {
+ 	/* returns the bit offset of the performance counter register */
+ 	switch (boot_cpu_data.x86_vendor) {
++	case X86_VENDOR_HYGON:
+ 	case X86_VENDOR_AMD:
+ 		if (msr >= MSR_F15H_PERF_CTR)
+ 			return (msr - MSR_F15H_PERF_CTR) >> 1;
+@@ -74,6 +75,7 @@ static inline unsigned int nmi_evntsel_msr_to_bit(unsigned int msr)
+ {
+ 	/* returns the bit offset of the event selection register */
+ 	switch (boot_cpu_data.x86_vendor) {
++	case X86_VENDOR_HYGON:
+ 	case X86_VENDOR_AMD:
+ 		if (msr >= MSR_F15H_PERF_CTL)
+ 			return (msr - MSR_F15H_PERF_CTL) >> 1;
+diff --git a/arch/x86/kernel/smpboot.c b/arch/x86/kernel/smpboot.c
+index f02ecaf..5369d7f 100644
+--- a/arch/x86/kernel/smpboot.c
++++ b/arch/x86/kernel/smpboot.c
+@@ -676,6 +676,7 @@ static void __init smp_quirk_init_udelay(void)
+ 
+ 	/* if modern processor, use no delay */
+ 	if (((boot_cpu_data.x86_vendor == X86_VENDOR_INTEL) && (boot_cpu_data.x86 == 6)) ||
++	    ((boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) && (boot_cpu_data.x86 >= 0x18)) ||
+ 	    ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) && (boot_cpu_data.x86 >= 0xF))) {
+ 		init_udelay = 0;
+ 		return;
+@@ -1592,7 +1593,8 @@ static inline void mwait_play_dead(void)
+ 	void *mwait_ptr;
+ 	int i;
+ 
+-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
++	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD ||
++	    boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+ 		return;
+ 	if (!this_cpu_has(X86_FEATURE_MWAIT))
+ 		return;
+diff --git a/arch/x86/kvm/emulate.c b/arch/x86/kvm/emulate.c
+index 106482d..34edf19 100644
+--- a/arch/x86/kvm/emulate.c
++++ b/arch/x86/kvm/emulate.c
+@@ -2711,7 +2711,16 @@ static bool em_syscall_is_enabled(struct x86_emulate_ctxt *ctxt)
+ 	    edx == X86EMUL_CPUID_VENDOR_AMDisbetterI_edx)
+ 		return true;
+ 
+-	/* default: (not Intel, not AMD), apply Intel's stricter rules... */
++	/* Hygon ("HygonGenuine") */
++	if (ebx == X86EMUL_CPUID_VENDOR_HygonGenuine_ebx &&
++	    ecx == X86EMUL_CPUID_VENDOR_HygonGenuine_ecx &&
++	    edx == X86EMUL_CPUID_VENDOR_HygonGenuine_edx)
++		return true;
++
++	/*
++	 * default: (not Intel, not AMD, not Hygon), apply Intel's
++	 * stricter rules...
++	 */
+ 	return false;
+ }
+ 
+diff --git a/arch/x86/pci/amd_bus.c b/arch/x86/pci/amd_bus.c
+index 649bdde..d1c58f4 100644
+--- a/arch/x86/pci/amd_bus.c
++++ b/arch/x86/pci/amd_bus.c
+@@ -390,7 +390,8 @@ static int __init pci_io_ecs_init(void)
+ 
+ static int __init amd_postcore_init(void)
+ {
+-	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD)
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD &&
++	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
+ 		return 0;
+ 
+ 	early_root_info_init();
+diff --git a/arch/x86/xen/pmu.c b/arch/x86/xen/pmu.c
+index 95997e6..cc69478 100644
+--- a/arch/x86/xen/pmu.c
++++ b/arch/x86/xen/pmu.c
+@@ -90,6 +90,12 @@ static void xen_pmu_arch_init(void)
+ 			k7_counters_mirrored = 0;
+ 			break;
+ 		}
++	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
++		amd_num_counters = F15H_NUM_COUNTERS;
++		amd_counters_base = MSR_F15H_PERF_CTR;
++		amd_ctrls_base = MSR_F15H_PERF_CTL;
++		amd_msr_step = 2;
++		k7_counters_mirrored = 1;
+ 	} else {
+ 		uint32_t eax, ebx, ecx, edx;
+ 
+@@ -285,7 +291,7 @@ static bool xen_amd_pmu_emulate(unsigned int msr, u64 *val, bool is_read)
+ 
+ bool pmu_msr_read(unsigned int msr, uint64_t *val, int *err)
+ {
+-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL) {
+ 		if (is_amd_pmu_msr(msr)) {
+ 			if (!xen_amd_pmu_emulate(msr, val, 1))
+ 				*val = native_read_msr_safe(msr, err);
+@@ -308,7 +314,7 @@ bool pmu_msr_write(unsigned int msr, uint32_t low, uint32_t high, int *err)
+ {
+ 	uint64_t val = ((uint64_t)high << 32) | low;
+ 
+-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL) {
+ 		if (is_amd_pmu_msr(msr)) {
+ 			if (!xen_amd_pmu_emulate(msr, &val, 0))
+ 				*err = native_write_msr_safe(msr, low, high);
+@@ -379,7 +385,7 @@ static unsigned long long xen_intel_read_pmc(int counter)
+ 
+ unsigned long long xen_read_pmc(int counter)
+ {
+-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
++	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL)
+ 		return xen_amd_read_pmc(counter);
+ 	else
+ 		return xen_intel_read_pmc(counter);
+diff --git a/drivers/acpi/acpi_pad.c b/drivers/acpi/acpi_pad.c
+index 552c1f7..a47676a 100644
+--- a/drivers/acpi/acpi_pad.c
++++ b/drivers/acpi/acpi_pad.c
+@@ -70,6 +70,7 @@ static void power_saving_mwait_init(void)
+ 
+ #if defined(CONFIG_X86)
+ 	switch (boot_cpu_data.x86_vendor) {
++	case X86_VENDOR_HYGON:
+ 	case X86_VENDOR_AMD:
+ 	case X86_VENDOR_INTEL:
+ 		/*
+diff --git a/drivers/acpi/processor_idle.c b/drivers/acpi/processor_idle.c
+index abb559c..b2131c4 100644
+--- a/drivers/acpi/processor_idle.c
++++ b/drivers/acpi/processor_idle.c
+@@ -205,6 +205,7 @@ static void lapic_timer_state_broadcast(struct acpi_processor *pr,
+ static void tsc_check_state(int state)
+ {
+ 	switch (boot_cpu_data.x86_vendor) {
++	case X86_VENDOR_HYGON:
+ 	case X86_VENDOR_AMD:
+ 	case X86_VENDOR_INTEL:
+ 	case X86_VENDOR_CENTAUR:
+diff --git a/drivers/cpufreq/acpi-cpufreq.c b/drivers/cpufreq/acpi-cpufreq.c
+index b61f4ec..6271d17 100644
+--- a/drivers/cpufreq/acpi-cpufreq.c
++++ b/drivers/cpufreq/acpi-cpufreq.c
+@@ -95,6 +95,7 @@ static bool boost_state(unsigned int cpu)
+ 		rdmsr_on_cpu(cpu, MSR_IA32_MISC_ENABLE, &lo, &hi);
+ 		msr = lo | ((u64)hi << 32);
+ 		return !(msr & MSR_IA32_MISC_ENABLE_TURBO_DISABLE);
++	case X86_VENDOR_HYGON:
+ 	case X86_VENDOR_AMD:
+ 		rdmsr_on_cpu(cpu, MSR_K7_HWCR, &lo, &hi);
+ 		msr = lo | ((u64)hi << 32);
+@@ -113,6 +114,7 @@ static int boost_set_msr(bool enable)
+ 		msr_addr = MSR_IA32_MISC_ENABLE;
+ 		msr_mask = MSR_IA32_MISC_ENABLE_TURBO_DISABLE;
+ 		break;
++	case X86_VENDOR_HYGON:
+ 	case X86_VENDOR_AMD:
+ 		msr_addr = MSR_K7_HWCR;
+ 		msr_mask = MSR_K7_HWCR_CPB_DIS;
+@@ -223,7 +225,8 @@ static unsigned extract_msr(struct cpufreq_policy *policy, u32 msr)
+ 	struct cpufreq_frequency_table *pos;
+ 	struct acpi_processor_performance *perf;
+ 
+-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
++	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD ||
++	    boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+ 		msr &= AMD_MSR_RANGE;
+ 	else
+ 		msr &= INTEL_MSR_RANGE;
+diff --git a/drivers/cpufreq/amd_freq_sensitivity.c b/drivers/cpufreq/amd_freq_sensitivity.c
+index be926d9..4ac7c3c 100644
+--- a/drivers/cpufreq/amd_freq_sensitivity.c
++++ b/drivers/cpufreq/amd_freq_sensitivity.c
+@@ -111,11 +111,16 @@ static int __init amd_freq_sensitivity_init(void)
+ {
+ 	u64 val;
+ 	struct pci_dev *pcidev;
++	unsigned int pci_vendor;
+ 
+-	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD)
++	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
++		pci_vendor = PCI_VENDOR_ID_AMD;
++	else if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
++		pci_vendor = PCI_VENDOR_ID_HYGON;
++	else
+ 		return -ENODEV;
+ 
+-	pcidev = pci_get_device(PCI_VENDOR_ID_AMD,
++	pcidev = pci_get_device(pci_vendor,
+ 			PCI_DEVICE_ID_AMD_KERNCZ_SMBUS, NULL);
+ 
+ 	if (!pcidev) {
+diff --git a/drivers/edac/amd64_edac.c b/drivers/edac/amd64_edac.c
+index e2addb2..4f653f7 100644
+--- a/drivers/edac/amd64_edac.c
++++ b/drivers/edac/amd64_edac.c
+@@ -211,7 +211,7 @@ static int __set_scrub_rate(struct amd64_pvt *pvt, u32 new_bw, u32 min_rate)
+ 
+ 	scrubval = scrubrates[i].scrubval;
+ 
+-	if (pvt->fam == 0x17) {
++	if (pvt->fam == 0x17 || pvt->fam == 0x18) {
+ 		__f17h_set_scrubval(pvt, scrubval);
+ 	} else if (pvt->fam == 0x15 && pvt->model == 0x60) {
+ 		f15h_select_dct(pvt, 0);
+@@ -264,6 +264,7 @@ static int get_scrub_rate(struct mem_ctl_info *mci)
+ 		break;
+ 
+ 	case 0x17:
++	case 0x18:
+ 		amd64_read_pci_cfg(pvt->F6, F17H_SCR_BASE_ADDR, &scrubval);
+ 		if (scrubval & BIT(0)) {
+ 			amd64_read_pci_cfg(pvt->F6, F17H_SCR_LIMIT_ADDR, &scrubval);
+@@ -1044,6 +1045,7 @@ static void determine_memory_type(struct amd64_pvt *pvt)
+ 		goto ddr3;
+ 
+ 	case 0x17:
++	case 0x18:
+ 		if ((pvt->umc[0].dimm_cfg | pvt->umc[1].dimm_cfg) & BIT(5))
+ 			pvt->dram_type = MEM_LRDDR4;
+ 		else if ((pvt->umc[0].dimm_cfg | pvt->umc[1].dimm_cfg) & BIT(4))
+@@ -3202,8 +3204,12 @@ static struct amd64_family_type *per_family_init(struct amd64_pvt *pvt)
+ 			pvt->ops = &family_types[F17_M10H_CPUS].ops;
+ 			break;
+ 		}
++		/* fall through */
++	case 0x18:
+ 		fam_type	= &family_types[F17_CPUS];
+ 		pvt->ops	= &family_types[F17_CPUS].ops;
++		if (pvt->fam == 0x18)
++			family_types[F17_CPUS].ctl_name = "F18h";
+ 		break;
+ 
+ 	default:
+@@ -3442,6 +3448,7 @@ static const struct x86_cpu_id amd64_cpuids[] = {
+ 	{ X86_VENDOR_AMD, 0x15, X86_MODEL_ANY,	X86_FEATURE_ANY, 0 },
+ 	{ X86_VENDOR_AMD, 0x16, X86_MODEL_ANY,	X86_FEATURE_ANY, 0 },
+ 	{ X86_VENDOR_AMD, 0x17, X86_MODEL_ANY,	X86_FEATURE_ANY, 0 },
++	{ X86_VENDOR_HYGON, 0x18, X86_MODEL_ANY, X86_FEATURE_ANY, 0 },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(x86cpu, amd64_cpuids);
+diff --git a/drivers/edac/mce_amd.c b/drivers/edac/mce_amd.c
+index 2ab4d61..c605089 100644
+--- a/drivers/edac/mce_amd.c
++++ b/drivers/edac/mce_amd.c
+@@ -1059,7 +1059,8 @@ static int __init mce_amd_init(void)
+ {
+ 	struct cpuinfo_x86 *c = &boot_cpu_data;
+ 
+-	if (c->x86_vendor != X86_VENDOR_AMD)
++	if (c->x86_vendor != X86_VENDOR_AMD &&
++	    c->x86_vendor != X86_VENDOR_HYGON)
+ 		return -ENODEV;
+ 
+ 	fam_ops = kzalloc(sizeof(struct amd_decoder_ops), GFP_KERNEL);
+@@ -1113,6 +1114,7 @@ static int __init mce_amd_init(void)
+ 		break;
+ 
+ 	case 0x17:
++	case 0x18:
+ 		xec_mask = 0x3f;
+ 		if (!boot_cpu_has(X86_FEATURE_SMCA)) {
+ 			printk(KERN_WARNING "Decoding supported only on Scalable MCA processors.\n");
+diff --git a/drivers/hwmon/k10temp.c b/drivers/hwmon/k10temp.c
+index bb15d78..9a5ce44 100644
+--- a/drivers/hwmon/k10temp.c
++++ b/drivers/hwmon/k10temp.c
+@@ -329,7 +329,7 @@ static int k10temp_probe(struct pci_dev *pdev,
+ 					  boot_cpu_data.x86_model == 0x70)) {
+ 		data->read_htcreg = read_htcreg_nb_f15;
+ 		data->read_tempreg = read_tempreg_nb_f15;
+-	} else if (boot_cpu_data.x86 == 0x17) {
++	} else if (boot_cpu_data.x86 == 0x17 || boot_cpu_data.x86 == 0x18) {
+ 		data->temp_adjust_mask = 0x80000;
+ 		data->read_tempreg = read_tempreg_nb_f17;
+ 		data->show_tdie = true;
+@@ -366,6 +366,7 @@ static const struct pci_device_id k10temp_id_table[] = {
+ 	{ PCI_VDEVICE(AMD, PCI_DEVICE_ID_AMD_16H_M30H_NB_F3) },
+ 	{ PCI_VDEVICE(AMD, PCI_DEVICE_ID_AMD_17H_DF_F3) },
+ 	{ PCI_VDEVICE(AMD, PCI_DEVICE_ID_AMD_17H_M10H_DF_F3) },
++	{ PCI_VDEVICE(HYGON, PCI_DEVICE_ID_AMD_17H_DF_F3) },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(pci, k10temp_id_table);
+diff --git a/drivers/i2c/busses/i2c-piix4.c b/drivers/i2c/busses/i2c-piix4.c
+index 90946a8..b0f82b3 100644
+--- a/drivers/i2c/busses/i2c-piix4.c
++++ b/drivers/i2c/busses/i2c-piix4.c
+@@ -289,7 +289,9 @@ static int piix4_setup_sb800(struct pci_dev *PIIX4_dev,
+ 	     PIIX4_dev->revision >= 0x41) ||
+ 	    (PIIX4_dev->vendor == PCI_VENDOR_ID_AMD &&
+ 	     PIIX4_dev->device == PCI_DEVICE_ID_AMD_KERNCZ_SMBUS &&
+-	     PIIX4_dev->revision >= 0x49))
++	     PIIX4_dev->revision >= 0x49) ||
++	    (PIIX4_dev->vendor == PCI_VENDOR_ID_HYGON &&
++	     PIIX4_dev->device == PCI_DEVICE_ID_AMD_KERNCZ_SMBUS))
+ 		smb_en = 0x00;
+ 	else
+ 		smb_en = (aux) ? 0x28 : 0x2c;
+@@ -361,7 +363,8 @@ static int piix4_setup_sb800(struct pci_dev *PIIX4_dev,
+ 		 piix4_smba, i2ccfg >> 4);
+ 
+ 	/* Find which register is used for port selection */
+-	if (PIIX4_dev->vendor == PCI_VENDOR_ID_AMD) {
++	if (PIIX4_dev->vendor == PCI_VENDOR_ID_AMD ||
++	    PIIX4_dev->vendor == PCI_VENDOR_ID_HYGON) {
+ 		switch (PIIX4_dev->device) {
+ 		case PCI_DEVICE_ID_AMD_KERNCZ_SMBUS:
+ 			piix4_port_sel_sb800 = SB800_PIIX4_PORT_IDX_KERNCZ;
+@@ -794,6 +797,7 @@ static const struct pci_device_id piix4_ids[] = {
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_ATI, PCI_DEVICE_ID_ATI_SBX00_SMBUS) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_HUDSON2_SMBUS) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_KERNCZ_SMBUS) },
++	{ PCI_DEVICE(PCI_VENDOR_ID_HYGON, PCI_DEVICE_ID_AMD_KERNCZ_SMBUS) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_SERVERWORKS,
+ 		     PCI_DEVICE_ID_SERVERWORKS_OSB4) },
+ 	{ PCI_DEVICE(PCI_VENDOR_ID_SERVERWORKS,
+@@ -904,11 +908,13 @@ static int piix4_probe(struct pci_dev *dev, const struct pci_device_id *id)
+ 	if ((dev->vendor == PCI_VENDOR_ID_ATI &&
+ 	     dev->device == PCI_DEVICE_ID_ATI_SBX00_SMBUS &&
+ 	     dev->revision >= 0x40) ||
+-	    dev->vendor == PCI_VENDOR_ID_AMD) {
++	    dev->vendor == PCI_VENDOR_ID_AMD ||
++	    dev->vendor == PCI_VENDOR_ID_HYGON) {
+ 		bool notify_imc = false;
+ 		is_sb800 = true;
+ 
+-		if (dev->vendor == PCI_VENDOR_ID_AMD &&
++		if ((dev->vendor == PCI_VENDOR_ID_AMD ||
++		     dev->vendor == PCI_VENDOR_ID_HYGON) &&
+ 		    dev->device == PCI_DEVICE_ID_AMD_KERNCZ_SMBUS) {
+ 			u8 imc;
+ 
+diff --git a/drivers/infiniband/hw/qib/qib_wc_x86_64.c b/drivers/infiniband/hw/qib/qib_wc_x86_64.c
+index edd0ddb..b847016 100644
+--- a/drivers/infiniband/hw/qib/qib_wc_x86_64.c
++++ b/drivers/infiniband/hw/qib/qib_wc_x86_64.c
+@@ -146,5 +146,6 @@ void qib_disable_wc(struct qib_devdata *dd)
+  */
+ int qib_unordered_wc(void)
+ {
+-	return boot_cpu_data.x86_vendor != X86_VENDOR_AMD;
++	return boot_cpu_data.x86_vendor != X86_VENDOR_AMD &&
++	       boot_cpu_data.x86_vendor != X86_VENDOR_HYGON;
+ }
+diff --git a/include/linux/pci_ids.h b/include/linux/pci_ids.h
+index d157983..8a0841c 100644
+--- a/include/linux/pci_ids.h
++++ b/include/linux/pci_ids.h
+@@ -2561,6 +2561,8 @@
+ 
+ #define PCI_VENDOR_ID_AMAZON		0x1d0f
+ 
++#define PCI_VENDOR_ID_HYGON		0x1d94
++
+ #define PCI_VENDOR_ID_TEKRAM		0x1de1
+ #define PCI_DEVICE_ID_TEKRAM_DC290	0xdc29
+ 
+diff --git a/tools/perf/arch/x86/util/kvm-stat.c b/tools/perf/arch/x86/util/kvm-stat.c
+index b32409a..081353d 100644
+--- a/tools/perf/arch/x86/util/kvm-stat.c
++++ b/tools/perf/arch/x86/util/kvm-stat.c
+@@ -156,7 +156,7 @@ int cpu_isa_init(struct perf_kvm_stat *kvm, const char *cpuid)
+ 	if (strstr(cpuid, "Intel")) {
+ 		kvm->exit_reasons = vmx_exit_reasons;
+ 		kvm->exit_reasons_isa = "VMX";
+-	} else if (strstr(cpuid, "AMD")) {
++	} else if (strstr(cpuid, "AMD") || strstr(cpuid, "Hygon")) {
+ 		kvm->exit_reasons = svm_exit_reasons;
+ 		kvm->exit_reasons_isa = "SVM";
+ 	} else
+diff --git a/tools/power/cpupower/utils/cpufreq-info.c b/tools/power/cpupower/utils/cpufreq-info.c
+index ccd08dd..c3f39d5 100644
+--- a/tools/power/cpupower/utils/cpufreq-info.c
++++ b/tools/power/cpupower/utils/cpufreq-info.c
+@@ -170,6 +170,7 @@ static int get_boost_mode(unsigned int cpu)
+ 	unsigned long pstates[MAX_HW_PSTATES] = {0,};
+ 
+ 	if (cpupower_cpu_info.vendor != X86_VENDOR_AMD &&
++	    cpupower_cpu_info.vendor != X86_VENDOR_HYGON &&
+ 	    cpupower_cpu_info.vendor != X86_VENDOR_INTEL)
+ 		return 0;
+ 
+@@ -190,8 +191,9 @@ static int get_boost_mode(unsigned int cpu)
+ 	printf(_("    Supported: %s\n"), support ? _("yes") : _("no"));
+ 	printf(_("    Active: %s\n"), active ? _("yes") : _("no"));
+ 
+-	if (cpupower_cpu_info.vendor == X86_VENDOR_AMD &&
+-	    cpupower_cpu_info.family >= 0x10) {
++	if ((cpupower_cpu_info.vendor == X86_VENDOR_AMD &&
++	     cpupower_cpu_info.family >= 0x10) ||
++	     cpupower_cpu_info.vendor == X86_VENDOR_HYGON) {
+ 		ret = decode_pstates(cpu, cpupower_cpu_info.family, b_states,
+ 				     pstates, &pstate_no);
+ 		if (ret)
+diff --git a/tools/power/cpupower/utils/helpers/amd.c b/tools/power/cpupower/utils/helpers/amd.c
+index 9607ada..5a39aa5 100644
+--- a/tools/power/cpupower/utils/helpers/amd.c
++++ b/tools/power/cpupower/utils/helpers/amd.c
+@@ -45,7 +45,7 @@ static int get_did(int family, union msr_pstate pstate)
+ 
+ 	if (family == 0x12)
+ 		t = pstate.val & 0xf;
+-	else if (family == 0x17)
++	else if (family >= 0x17)
+ 		t = pstate.fam17h_bits.did;
+ 	else
+ 		t = pstate.bits.did;
+@@ -59,7 +59,7 @@ static int get_cof(int family, union msr_pstate pstate)
+ 	int fid, did, cof;
+ 
+ 	did = get_did(family, pstate);
+-	if (family == 0x17) {
++	if (family >= 0x17) {
+ 		fid = pstate.fam17h_bits.fid;
+ 		cof = 200 * fid / did;
+ 	} else {
+@@ -119,7 +119,7 @@ int decode_pstates(unsigned int cpu, unsigned int cpu_family,
+ 		}
+ 		if (read_msr(cpu, MSR_AMD_PSTATE + i, &pstate.val))
+ 			return -1;
+-		if ((cpu_family == 0x17) && (!pstate.fam17h_bits.en))
++		if ((cpu_family >= 0x17) && (!pstate.fam17h_bits.en))
+ 			continue;
+ 		else if (!pstate.bits.en)
+ 			continue;
+diff --git a/tools/power/cpupower/utils/helpers/cpuid.c b/tools/power/cpupower/utils/helpers/cpuid.c
+index 732b0b4..5cc39d4 100644
+--- a/tools/power/cpupower/utils/helpers/cpuid.c
++++ b/tools/power/cpupower/utils/helpers/cpuid.c
+@@ -8,7 +8,7 @@
+ #include "helpers/helpers.h"
+ 
+ static const char *cpu_vendor_table[X86_VENDOR_MAX] = {
+-	"Unknown", "GenuineIntel", "AuthenticAMD",
++	"Unknown", "GenuineIntel", "AuthenticAMD", "HygonGenuine",
+ };
+ 
+ #if defined(__i386__) || defined(__x86_64__)
+@@ -109,6 +109,7 @@ out:
+ 	fclose(fp);
+ 	/* Get some useful CPU capabilities from cpuid */
+ 	if (cpu_info->vendor != X86_VENDOR_AMD &&
++	    cpu_info->vendor != X86_VENDOR_HYGON &&
+ 	    cpu_info->vendor != X86_VENDOR_INTEL)
+ 		return ret;
+ 
+@@ -124,8 +125,9 @@ out:
+ 	if (cpuid_level >= 6 && (cpuid_ecx(6) & 0x1))
+ 		cpu_info->caps |= CPUPOWER_CAP_APERF;
+ 
+-	/* AMD Boost state enable/disable register */
+-	if (cpu_info->vendor == X86_VENDOR_AMD) {
++	/* AMD or Hygon Boost state enable/disable register */
++	if (cpu_info->vendor == X86_VENDOR_AMD ||
++	    cpu_info->vendor == X86_VENDOR_HYGON) {
+ 		if (ext_cpuid_level >= 0x80000007 &&
+ 		    (cpuid_edx(0x80000007) & (1 << 9)))
+ 			cpu_info->caps |= CPUPOWER_CAP_AMD_CBP;
+diff --git a/tools/power/cpupower/utils/helpers/helpers.h b/tools/power/cpupower/utils/helpers/helpers.h
+index 41da392..9021396 100644
+--- a/tools/power/cpupower/utils/helpers/helpers.h
++++ b/tools/power/cpupower/utils/helpers/helpers.h
+@@ -61,7 +61,7 @@ extern int be_verbose;
+ 
+ /* cpuid and cpuinfo helpers  **************************/
+ enum cpupower_cpu_vendor {X86_VENDOR_UNKNOWN = 0, X86_VENDOR_INTEL,
+-			  X86_VENDOR_AMD, X86_VENDOR_MAX};
++			  X86_VENDOR_AMD, X86_VENDOR_HYGON, X86_VENDOR_MAX};
+ 
+ #define CPUPOWER_CAP_INV_TSC		0x00000001
+ #define CPUPOWER_CAP_APERF		0x00000002
+diff --git a/tools/power/cpupower/utils/helpers/misc.c b/tools/power/cpupower/utils/helpers/misc.c
+index 80fdf55..629ff73 100644
+--- a/tools/power/cpupower/utils/helpers/misc.c
++++ b/tools/power/cpupower/utils/helpers/misc.c
+@@ -26,7 +26,7 @@ int cpufreq_has_boost_support(unsigned int cpu, int *support, int *active,
+ 		 * has Hardware determined variable increments instead.
+ 		 */
+ 
+-		if (cpu_info.family == 0x17) {
++		if (cpu_info.family >= 0x17) {
+ 			if (!read_msr(cpu, MSR_AMD_HWCR, &val)) {
+ 				if (!(val & CPUPOWER_AMD_CPBDIS))
+ 					*active = 1;
+diff --git a/tools/power/cpupower/utils/idle_monitor/mperf_monitor.c b/tools/power/cpupower/utils/idle_monitor/mperf_monitor.c
+index d7c2a6d..f2a7e9c 100644
+--- a/tools/power/cpupower/utils/idle_monitor/mperf_monitor.c
++++ b/tools/power/cpupower/utils/idle_monitor/mperf_monitor.c
+@@ -241,7 +241,8 @@ static int init_maxfreq_mode(void)
+ 	if (!(cpupower_cpu_info.caps & CPUPOWER_CAP_INV_TSC))
+ 		goto use_sysfs;
+ 
+-	if (cpupower_cpu_info.vendor == X86_VENDOR_AMD) {
++	if (cpupower_cpu_info.vendor == X86_VENDOR_AMD ||
++	    cpupower_cpu_info.vendor == X86_VENDOR_HYGON) {
+ 		/* MSR_AMD_HWCR tells us whether TSC runs at P0/mperf
+ 		 * freq.
+ 		 * A test whether hwcr is accessable/available would be:
